@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>COVID-19 Global Impact Dashboard</title>
+<script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+<style>
+body{font-family:Arial,sans-serif;margin:0;background:#f5f7fb;color:#1f2937}
+header{background:#ffffff;padding:28px 34px;border-bottom:1px solid #e5e7eb}
+h1{margin:0 0 8px;font-size:30px} .sub{color:#6b7280}
+.wrap{max-width:1200px;margin:24px auto;padding:0 18px}
+.controls{background:white;padding:18px;border-radius:14px;margin-bottom:18px}
+select{padding:10px 12px;border-radius:8px;border:1px solid #d1d5db}
+.cards{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:18px}
+.card{background:white;border-radius:14px;padding:18px;border:1px solid #e5e7eb}
+.label{font-size:12px;color:#6b7280;text-transform:uppercase;letter-spacing:.05em}
+.value{font-size:26px;font-weight:700;margin-top:8px}
+.chart{background:white;border-radius:14px;margin-bottom:18px;padding:8px;border:1px solid #e5e7eb}
+.note{font-size:13px;color:#6b7280;line-height:1.55}
+@media(max-width:800px){.cards{grid-template-columns:repeat(2,1fr)}}
+</style>
+</head>
+<body>
+<header>
+<h1>COVID-19 Global Impact Dashboard</h1>
+<div class="sub">Veda Technology Project · OWID data · population-normalized comparison</div>
+</header>
+<div class="wrap">
+<div class="controls">
+<label for="country"><b>Country:</b></label>
+<select id="country"></select>
+<span style="margin-left:18px" class="note">Live data loads from Our World in Data when the page has internet access.</span>
+</div>
+
+<div class="cards">
+<div class="card"><div class="label">Latest cases / million</div><div id="cases" class="value">—</div></div>
+<div class="card"><div class="label">Latest deaths / million</div><div id="deaths" class="value">—</div></div>
+<div class="card"><div class="label">At least one dose</div><div id="vax1" class="value">—</div></div>
+<div class="card"><div class="label">Full initial protocol</div><div id="vax2" class="value">—</div></div>
+</div>
+
+<div id="casesChart" class="chart"></div>
+<div id="deathsChart" class="chart"></div>
+<div id="vaxChart" class="chart"></div>
+
+<div class="card">
+<h3>Interpretation</h3>
+<p class="note">
+The dashboard is descriptive. Confirmed cases and deaths are affected by testing,
+reporting rules and data availability. Vaccination coverage is not interpreted as a
+stand-alone causal explanation for mortality differences. For the full reproducible
+pipeline, run the accompanying Jupyter notebook.
+</p>
+</div>
+</div>
+
+<script>
+const urls = {
+  cases: "https://ourworldindata.org/grapher/total-cases-covid-19.csv?csvType=full&useColumnShortNames=false",
+  deaths: "https://ourworldindata.org/grapher/total-deaths-covid-19.csv?csvType=full&useColumnShortNames=false",
+  vax1: "https://ourworldindata.org/grapher/share-people-vaccinated-covid.csv?csvType=full&useColumnShortNames=false",
+  vax2: "https://ourworldindata.org/grapher/share-people-fully-vaccinated-covid.csv?csvType=full&useColumnShortNames=false"
+};
+
+function parseCSV(text){
+  const rows=[]; let row=[], cell="", q=false;
+  for(let i=0;i<text.length;i++){
+    const c=text[i], n=text[i+1];
+    if(c==='"' && q && n==='"'){cell+='"';i++;continue}
+    if(c==='"'){q=!q;continue}
+    if(c===',' && !q){row.push(cell);cell="";continue}
+    if((c==='\n'||c==='\r')&&!q){
+      if(c==='\r'&&n==='\n')i++;
+      row.push(cell);cell="";
+      if(row.length)rows.push(row);row=[];continue
+    }
+    cell+=c
+  }
+  if(cell.length||row.length){row.push(cell);rows.push(row)}
+  const h=rows.shift();
+  return rows.filter(r=>r.length===h.length).map(r=>Object.fromEntries(h.map((k,i)=>[k,r[i]])));
+}
+async function getCSV(url){ const r=await fetch(url); return parseCSV(await r.text()); }
+
+let data={};
+
+function numeric(x){const v=Number(x); return Number.isFinite(v)?v:null}
+function lastByCountry(rows){
+  const out={};
+  rows.forEach(r=>{
+    const c=r.Entity; if(!c)return;
+    const d=r.Day||r.Date||r.date;
+    if(!out[c] || new Date(d)>new Date(out[c].date)) out[c]={date:d,row:r};
+  });
+  return out;
+}
+
+async function init(){
+  try{
+    const [cases,deaths,vax1,vax2]=await Promise.all([
+      getCSV(urls.cases),getCSV(urls.deaths),getCSV(urls.vax1),getCSV(urls.vax2)
+    ]);
+    data={cases,deaths,vax1,vax2};
+    const countries=[...new Set(cases.map(x=>x.Entity))].filter(x=>!x.includes("World") && !x.includes("income")).sort();
+    const sel=document.getElementById("country");
+    countries.forEach(c=>{const o=document.createElement("option");o.value=c;o.textContent=c;sel.appendChild(o)});
+    ["India","United States","Brazil","United Kingdom","Germany","France","Italy","Japan"].forEach(c=>{
+      if(countries.includes(c)){sel.value=c;return;}
+    });
+    sel.onchange=render; render();
+  }catch(e){
+    document.querySelector(".wrap").innerHTML += "<div class='card'><b>Data could not be loaded.</b><p class='note'>Open this dashboard with internet access, or run the Jupyter notebook. Error: "+e+"</p></div>";
+  }
+}
+
+function render(){
+  const c=document.getElementById("country").value;
+  const filter=(rows)=>rows.filter(x=>x.Entity===c).sort((a,b)=>new Date(a.Day||a.Date)-new Date(b.Day||b.Date));
+  const cr=filter(data.cases), dr=filter(data.deaths), v1=filter(data.vax1), v2=filter(data.vax2);
+
+  const latestC=cr.at(-1), latestD=dr.at(-1), latestV1=v1.at(-1), latestV2=v2.at(-1);
+  const caseKey=Object.keys(latestC||{}).find(k=>k.toLowerCase().includes("cases"));
+  const deathKey=Object.keys(latestD||{}).find(k=>k.toLowerCase().includes("deaths"));
+  const v1Key=Object.keys(latestV1||{}).find(k=>k.toLowerCase().includes("share"));
+  const v2Key=Object.keys(latestV2||{}).find(k=>k.toLowerCase().includes("share"));
+
+  document.getElementById("cases").textContent=latestC&&caseKey ? Number(latestC[caseKey]).toLocaleString(undefined,{maximumFractionDigits:1}) : "—";
+  document.getElementById("deaths").textContent=latestD&&deathKey ? Number(latestD[deathKey]).toLocaleString(undefined,{maximumFractionDigits:1}) : "—";
+  document.getElementById("vax1").textContent=latestV1&&v1Key ? Number(latestV1[v1Key]).toFixed(1)+"%" : "—";
+  document.getElementById("vax2").textContent=latestV2&&v2Key ? Number(latestV2[v2Key]).toFixed(1)+"%" : "—";
+
+  Plotly.newPlot("casesChart",[{
+    x:cr.map(x=>x.Day||x.Date),y:cr.map(x=>numeric(x[caseKey])),mode:"lines",name:"Cases / million"
+  }],{title:c+" — Cumulative Confirmed Cases per Million",margin:{t:55,l:60,r:20,b:45},xaxis:{title:"Date"},yaxis:{title:"Cases / million"}});
+
+  Plotly.newPlot("deathsChart",[{
+    x:dr.map(x=>x.Day||x.Date),y:dr.map(x=>numeric(x[deathKey])),mode:"lines",name:"Deaths / million"
+  }],{title:c+" — Cumulative Confirmed Deaths per Million",margin:{t:55,l:60,r:20,b:45},xaxis:{title:"Date"},yaxis:{title:"Deaths / million"}});
+
+  Plotly.newPlot("vaxChart",[
+    {x:v1.map(x=>x.Day||x.Date),y:v1.map(x=>numeric(x[v1Key])),mode:"lines",name:"At least one dose (%)"},
+    {x:v2.map(x=>x.Day||x.Date),y:v2.map(x=>numeric(x[v2Key])),mode:"lines",name:"Completed initial protocol (%)"}
+  ],{title:c+" — Vaccination Rollout",margin:{t:55,l:60,r:20,b:45},xaxis:{title:"Date"},yaxis:{title:"Population (%)",range:[0,105]}});
+}
+init();
+</script>
+</body>
+</html>
